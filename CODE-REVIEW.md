@@ -254,7 +254,7 @@ If SwiftData is configured to use CloudKit:
 ## Testing
 
 - **Framework**: Swift Testing (`@Test`, `#expect`) for new tests on Xcode 16+ toolchains; XCTest is expected in older codebases and for UI tests. Don't flag XCTest as legacy when the toolchain or deployment setup requires it.
-- **Test naming**: prefer `@Test("Given X, when Y, then Z")` display names with short camelCase function names. Flag backtick raw identifiers for test names — they can fail on CI runners with older Swift toolchains.
+- **Test naming**: prefer `@Test("Given X, when Y, then Z")` display names with short camelCase function names. Be careful with backtick raw-identifier test names: Apple's test-modernizer skill now recommends them for sentence-like names, but they can fail on CI runners with older Swift toolchains — follow the codebase's convention and toolchain reality (see "Test modernization" below).
 - **Test behavior, not implementation**: tests should assert observable outcomes (state, return values, errors), not internal details (view hierarchy, method calls, private state). Flag tests coupled to implementation details.
 - **Fakes over mocking frameworks**: hand-written configurable fakes behind protocol seams. Dependencies should be injectable so model/logic classes can be tested with fakes.
 - **Coverage priorities (risk-based)**: data integrity, validation rules, business/model logic, error handling, and state transitions. Don't demand tests for SwiftUI framework behavior or trivial getters.
@@ -315,7 +315,7 @@ Apple ships seven agent skills with Xcode 27 (WWDC 2026): `swiftui-specialist`, 
 - WWDC26 session 259, "Xcode, agents, and you" — https://developer.apple.com/videos/play/wwdc2026/259/
 - Coding intelligence (Apple docs) — https://developer.apple.com/documentation/xcode/coding-intelligence
 - Extending and customizing agents (Apple docs) — https://developer.apple.com/documentation/Xcode/extending-and-customizing-agents
-- Skill-file mirror for deep links — https://github.com/superagents-lab/xcode27-skills (Apple-authored content, community-exported; the linkable source for individual practices until a local Xcode 27 install exists). The `swiftui-specialist` reference files (structure, dataflow, environment, foreach, modifiers, animations, localization, soft-deprecation + API list) and the `swiftui-whats-new-27` reference files (state-macro, content-builder, reorderable, swipe-actions, async-image, toolbar, item-binding, document-based-apps, deprecations) are incorporated into this document as of 2026-08-09.
+- Skill-file mirror for deep links — https://github.com/superagents-lab/xcode27-skills (Apple-authored content, community-exported; the linkable source for individual practices until a local Xcode 27 install exists). The `swiftui-specialist` reference files (structure, dataflow, environment, foreach, modifiers, animations, localization, soft-deprecation + API list) and the `swiftui-whats-new-27` reference files (state-macro, content-builder, reorderable, swipe-actions, async-image, toolbar, item-binding, document-based-apps, deprecations), plus the `test-modernizer` skill, are incorporated into this document as of 2026-08-09.
 - Antoine van der Lee, "SwiftUI Best Practices, straight from Apple's Xcode 27 Agent Skill" — https://www.avanderlee.com/ai-development/swiftui-best-practices-xcode-27-agent-skill/ (companion: "Using Xcode 27's Agent Skills in Claude, Codex, and Cursor" — https://www.avanderlee.com/ai-development/using-xcode-27s-agent-skills-in-claude-codex-and-cursor/)
 - Hacking with Swift, "Agent skills in Xcode: How to install and use them today" — https://www.hackingwithswift.com/articles/283/how-to-install-and-use-ai-agent-skills-in-xcode
 - Community superset skill — https://github.com/avdlee/swiftui-agent-skill (van der Lee's swiftui-expert-skill: Apple's skill plus areas Apple's doesn't cover — accessibility, navigation, layout, previews, animations)
@@ -359,3 +359,30 @@ New APIs (all SDK 27; gate below an iOS 27 deployment target):
 - **Toolbar overflow control.** `visibilityPriority(_:)` (what overflows first), `ToolbarOverflowMenu` (always-overflow items), `.topBarPinnedTrailing` (never overflows), `toolbarMinimizeBehavior(_:for:)` (minimize on scroll), `contentMarginsRemoved(_:)`, and the status bar as a `ToolbarPlacement`. Per-API availability varies by platform — check the reference's table before flagging. `ForEach` as toolbar content back-deploys to iOS 16 when built with the 2027 SDK ([Apple: toolbar.md](https://github.com/superagents-lab/xcode27-skills/blob/master/swiftui-whats-new-27/references/toolbar.md)).
 - **`alert`/`confirmationDialog` from an item binding.** New `item: Binding<T?>` overloads use the `sheet(item:)` shape: present while non-nil, pass the unwrapped value to `actions`/`message`, reset on dismiss. For per-item dialogs at a 27+ target, prefer this over a synthesized `Bool` + `presenting:` ([Apple: item-binding.md](https://github.com/superagents-lab/xcode27-skills/blob/master/swiftui-whats-new-27/references/item-binding.md)).
 - **Document apps: `ReadableDocument`/`WritableDocument`.** The modern replacement for `FileDocument`/`ReferenceFileDocument` in new code at 27+ targets (iOS/macOS/visionOS; not watchOS/tvOS): `@Observable` reference-type documents, background reads/writes via `DocumentReader`/`DocumentWriter`, direct file-URL access, and `Subprogress` progress reporting. Review catch: `snapshot(contentType:)` and `apply(snapshot:previous:)` run on the main actor and must stay lightweight — serialization belongs in the reader/writer ([Apple: document-based-apps.md](https://github.com/superagents-lab/xcode27-skills/blob/master/swiftui-whats-new-27/references/document-based-apps.md)).
+
+## Test modernization (XCTest → Swift Testing)
+
+Source: Apple's `test-modernizer` coding skill (Xcode 27) — [full migration reference](https://github.com/superagents-lab/xcode27-skills/blob/master/test-modernizer/SKILL.md). Use when reviewing a migration PR, or to suggest modernization where a codebase is already moving to Swift Testing. Scope discipline applies: don't push migration in a PR that isn't about the tests, and UI automation tests (`XCUI*`) cannot migrate — don't flag them.
+
+**Behavior-preserving traps** — the highest-value review catches; each of these silently changes what a test verifies when missed:
+
+- **`continueAfterFailure = false` must become `try #require`, not `#expect`.** `#expect` continues after failure by default. When the XCTest class set `continueAfterFailure = false` in a method, all subsequent assertions in that method become `try #require`; when it was set in `setUp`, *every assertion in every test of that class* must. A migration that mechanically maps everything to `#expect` weakens those tests.
+- **Never downgrade an existing `try #require` to `#expect`** — that changes test behavior.
+- **Concurrency semantics flip.** XCTest ran synchronous tests on the main actor and serially within a suite; Swift Testing runs tests on arbitrary tasks, in parallel. Add `@MainActor` only where the test actually relied on main-actor isolation, and `@Suite(.serialized)` where tests share mutable state — a migration that skips this check introduces flaky races. Don't add `@MainActor` defensively everywhere either.
+- **State isolation changes.** Swift Testing creates a fresh suite instance per test: `setUp` becomes `init` (or in-place property initialization — convert implicitly-unwrapped optionals to non-optional), `tearDown` becomes `deinit` (requiring an `actor` or `final class`, since structs have no `deinit`; otherwise prefer `struct`).
+
+**Mechanical mappings** (spot-check a migration against these; full table in the skill):
+
+- `XCTAssert*` family → `#expect(...)` with operators (`==`, `!=`, `>`, `===`, `x == nil`); `try XCTUnwrap` → `try #require`. No direct equivalent for `XCTAssertEqual(_:_:accuracy:)` — expect floating-point math.
+- Throwing: `XCTAssertThrowsError` → `#expect(throws:)` — prefer the specific-error form when the error is `Equatable`; `XCTAssertNoThrow` → `#expect(throws: Never.self)`.
+- `XCTestExpectation` + `fulfill()` → `await confirmation()` (ranged `expectedCount:` for over-fulfill cases).
+- `XCTSkipIf`/`XCTSkipUnless` → `.disabled(if:)`/`.enabled(if:)` traits; OS-version skips → `@available` on the test function; mid-test `XCTSkip` → `try Test.cancel(...)`.
+- `XCTExpectFailure` → `withKnownIssue(...)` (`isIntermittent: true` for flaky, `when:`/`matching:` for conditional).
+- `XCTAttachment` → `Attachment.record(value)`.
+
+**Modernization opportunities** (non-blocking suggestions in already-Swift-Testing code):
+
+- `guard let x = ... else { Issue.record(...); return }` collapses to `try #require(...)`; standalone `XCTFail`/`Issue.record` often promote to `#expect`/`#require`.
+- Loops over inputs, or many near-identical tests, become parameterized `@Test(arguments:)`.
+- Migrate one class at a time; a file may contain both frameworks mid-migration — don't flag the mix.
+- Naming: Apple recommends sentence-case raw-identifier names for multi-word tests (`` @Test func `Engine does not stall`() ``). Caveat this against reality: raw identifiers can fail on CI runners with older Swift toolchains, and this guide's Testing section prefers `@Test("Given X, when Y, then Z")` display names for that reason — follow the codebase's existing convention and toolchain constraints (consistency over convention, as ever).
